@@ -1,0 +1,6 @@
+# The MCP Python SDK changed its API in 2.x. This project is written for 2.x.
+mcp>=2.2,<3
+httpx>=0.27
+pyyaml>=6
+tzdata>=2024.1   # Windows has no built-in timezone database
+pytest>=8

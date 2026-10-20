@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+config.yaml
+.secrets/
+journal/
+state/
+discovery/
+KILL

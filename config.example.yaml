@@ -1,0 +1,157 @@
+# Copy this file to config.yaml and edit it. config.yaml is git-ignored.
+#
+# NOTHING in this file is investment advice. Every number below is a
+# placeholder so the code runs. You choose the tickers, sizes and rules.
+
+# paper   = read real quotes, decide, log "WOULD place". Never touches orders.
+#           In the morning / evening sessions: a dry run, everything except sending the order.
+# approve = review the order with Robinhood, show it, wait for your y/N.
+#           The morning / evening sessions: REAL orders, each one only after you type yes.
+# auto    = review, then place with no human (once / loop / auto-* only). Needs the two unlocks below.
+mode: paper
+
+robinhood:
+  transport: http                 # http = real Robinhood MCP | mock = local fake server for testing
+  mcp_url: https://agent.robinhood.com/mcp/trading
+  account_number: ""              # your AGENTIC account number (run: python -m agent discover)
+  crypto_account: ""              # its numeric rhs_account_number for crypto. Empty = found automatically
+  oauth_callback_port: 8765
+
+paper:
+  buying_power: 500               # pretend cash used only in paper mode
+
+# Two separate unlocks for auto mode. Both are required.
+# 1) this flag   2) environment variable RH_AGENT_ALLOW_AUTO=1
+i_understand_auto_places_real_orders: false
+
+# Who makes the buy / skip / sell / hold calls:
+#   laya = Laya, an open-source decision model on your GPU (Convai, Apache 2.0). It does not write text:
+#          it only picks from the options the code lists, with a probability for each. No broken JSON,
+#          no invented symbols. It can still be wrong, and it was not trained on trading.
+#          Start it first:  pip install "laya[serve]"  then  $env:LAYA_DEVICE="cuda"; $env:LAYA_PRELOAD="1"; laya-serve
+#   llm  = the local LLM under llm: below (the old way)
+# The research chat (python -m agent chat) always uses the llm: section.
+engine: laya
+
+laya:
+  base_url: http://localhost:8000      # laya-serve default
+  api_key_env: LAYA_API_KEY            # only if you started laya-serve with LAYA_API_KEY set
+  timeout_seconds: 30
+
+llm:
+  enabled: true
+  # Any OpenAI-compatible local server works. Pick ONE:
+  #   Ollama      base_url: http://localhost:11434/v1   model: gemma4:12b
+  #   llama.cpp   base_url: http://localhost:8080/v1    model: anything (llama-server uses the model it loaded)
+  base_url: http://localhost:11434/v1
+  model: gemma4:12b
+  # Switch a thinking model's thinking off, so its JSON answer comes back fast and is never cut off:
+  #   Ollama:     extra_body: {reasoning_effort: none}      ("think: false" is ignored on Ollama's /v1 endpoint)
+  #   llama.cpp:  extra_body: {chat_template_kwargs: {enable_thinking: false}}
+  extra_body: {reasoning_effort: none}
+  temperature: 0.1
+  timeout_seconds: 180
+  fail_closed: true        # LLM down or reply unreadable -> VETO (never "approve by default")
+  use_news: true           # feed recent headlines into the review step
+
+# Your own stock list. The morning session always looks at these too, on top of what the scan finds.
+# once / loop / auto-* trade ONLY these and refuse to run while the list is empty.
+universe: []
+
+strategy:
+  # dip_buy_with_exits = fixed rules decide, the LLM can only veto an entry
+  # llm_decider        = the local LLM decides buy / sell / hold. Code still sets size, price and all limits
+  name: dip_buy_with_exits
+  order_style: limit_whole_shares   # limit_whole_shares | market_dollars
+  entry_drop_pct: 2.0               # BUY when price is down this % vs previous close
+  order_usd: 50                     # target size of each buy
+  take_profit_pct: 1.5              # SELL all when up this % vs average cost (hard exit, runs in BOTH modes)
+  stop_loss_pct: 1.0                # SELL all when down this % vs average cost (hard exit, runs in BOTH modes)
+  flatten_before_close: true        # day-trade style: sell everything near the close
+  flatten_minutes_before_close: 10
+
+# After a buy fills, the agent parks a REAL stop order at Robinhood, strategy.stop_loss_pct under your cost.
+# That order works while the agent sleeps, and even if this PC or your internet is down.
+# Needs whole shares, so keep order_style: limit_whole_shares.
+protect:
+  broker_stop: true
+  fill_wait_seconds: 90           # buy not filled by then -> the buy is cancelled (no late, unprotected fills)
+  poll_seconds: 5
+
+# HOW OFTEN the agent runs is set by which scheduled task you register:
+#   .\scripts\register_task.ps1                        continuous: a check every loop.interval_seconds
+#   .\scripts\register_task.ps1 -Style two_sessions    morning buy + evening sell, nothing in between
+schedule:
+  # No new buys on these dates. Half days: the market shuts at 1 PM Eastern, before the evening task runs.
+  # 2026 half days per the NYSE calendar. Add next year's dates when NYSE publishes them.
+  no_trade_dates: ["2026-11-27", "2026-12-24"]
+  evening_verify_seconds: 20      # after the evening sell: wait, then check that nothing is left
+
+# Used only when strategy.name is llm_decider
+decider:
+  min_confidence: 0.70          # LLM decisions under this are treated as hold
+  decide_every_minutes: 15      # the LLM is asked at most this often. Two-session style asks once, in the morning
+  max_buys_per_decision: 1      # if the LLM wants several buys, only the most confident ones go ahead
+  use_news: true                # false = decide on prices only (removes the headline-injection risk)
+  use_price_history: true
+  history_bars: 24              # how many 5-minute closes the LLM sees per symbol
+
+guardrails:
+  max_order_usd: 60
+  max_daily_buy_usd: 150
+  max_trades_per_day: 4             # max BUYS per day. Sells are never blocked by a counter
+  max_position_usd: 120
+  max_open_positions: 3
+  daily_loss_stop_pct: 2.0          # account down this % from today's first reading -> no new buys
+  allowed_order_types: [limit]      # add "market" only if you use market_dollars
+  regular_hours_only: true
+  no_new_buys_first_minutes: 15
+  no_new_buys_last_minutes: 20
+  max_quote_age_seconds: 90
+  max_spread_pct: 0.30
+  crypto_max_spread_pct: 2.0        # coins trade with wider bid/ask spreads than stocks. Robinhood's were about
+                                    # 1.8-1.9% in Sept 2026: at 1.0 no coin passes. A day-style coin has to beat
+                                    # that gap by the evening, so hold style (see daily:) suits crypto better
+  max_limit_slippage_pct: 0.20      # buy limit may sit at most this % above the ask
+  block_on_any_review_alert: true   # any warning from Robinhood's review step blocks auto mode
+
+loop:
+  interval_seconds: 300
+
+# ---------------------------------------------------------------------------------------------
+# Daily sessions. YOU run both. Nothing is bought without your "yes" at the keyboard.
+#   python -m agent morning   scan -> your local model suggests -> you pick -> buy
+#   python -m agent evening   up or flat -> sell. Down -> you choose: sell or keep
+# Every buy, both stocks and crypto, is still checked by the guardrails above.
+# ---------------------------------------------------------------------------------------------
+daily:
+  max_suggestions: 5              # most ideas shown each morning
+  min_confidence: 0.60            # the model's ideas under this are not shown
+  analysis_batch: 4               # stocks/coins per model call. Small keeps a local model focused
+  stock_stop_loss_pct: 1.0        # after a buy fills, a stop order at Robinhood sells if the price drops this % under
+                                  # what you paid. Placeholder numbers: yours to set
+  # Crypto: day  = like stocks: a stop order at Robinhood, sold in the evening if up or flat.
+  #         hold = keep the coin; a TARGET sell order waits at Robinhood and sells by itself at the target.
+  #         Robinhood keeps one sell order per coin, so no stop order sits next to it: every session checks the
+  #         stop level instead, and the evening offers to sell under it.
+  crypto_style: day
+  crypto_take_profit_pct: 5.0     # hold style: the target sell sits this % over what you paid
+  crypto_stop_loss_pct: 3.0       # day: the stop order at Robinhood. hold: the stop level each session checks
+  when_down: ask                  # evening, holdings below what you paid: ask | sell | keep
+  confirm_sells: true             # evening: show the plan and wait for your yes before selling
+  sell_slack_pct: 0.10            # evening sell limit sits this % under the bid so it fills (at most max_limit_slippage_pct)
+
+scan:
+  stocks:
+    enabled: true
+    min_price: 5                  # skips penny stocks
+    max_price: 50                 # at most strategy.order_usd, or the agent could never buy one share
+    min_avg_volume: 1000000       # shares a day (30-day average): heavily traded, so orders fill at fair prices
+    max_candidates: 8             # the most traded stocks that pass go to the model
+    # filters: []                 # your own Robinhood screener filters replace the three rules above
+  crypto:
+    enabled: true
+    max_candidates: 5             # the coins with the tightest bid/ask spread go to the model
+    include: []                   # coins the morning always looks at, like [BTC, ETH]
+    exclude: [USDC, USDT, DAI, PYUSD, USDP, GUSD, TUSD, FDUSD, USDG]   # stablecoins: nothing to trade
+    history: coinbase             # coinbase = hourly prices from Coinbase's public API, for the analysis only | none
