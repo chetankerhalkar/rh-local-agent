@@ -252,6 +252,22 @@ def test_a_buy_cut_off_mid_send_is_found_and_adopted(world):
     assert [o["state"] for o in broker(tmp)["orders"].values() if o["type"] == "stop_market"] == ["confirmed"]
 
 
+def test_crypto_off_means_no_new_coins_even_while_one_is_held(world):
+    c, tmp, queue = world
+    queue += ["2", "yes"]                                   # first morning: buy ETH-USD, the second idea
+    morning(c)
+    assert book(tmp)["ETH-USD"]["stop_order_id"]
+    c["scan"]["crypto"]["enabled"] = False
+    SEEN.clear()
+    scans = len(named(tmp, "scan"))
+    queue += [""]                                           # second morning: buy nothing
+    morning(c)
+    assert queue == []
+    assert not [e for e in named(tmp, "scan")[scans:] if e["asset"] == "crypto"]
+    assert SEEN and not [i for i in SEEN if daily.is_crypto(i["symbol"])]     # the model never saw a coin
+    assert book(tmp)["ETH-USD"]["stop_order_id"]                              # the held coin is still managed
+
+
 def test_scan_failure_falls_back_to_your_universe(world, monkeypatch):
     c, tmp, queue = world
     monkeypatch.setenv("MOCK_SCAN_FAIL", "1")

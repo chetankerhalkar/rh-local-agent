@@ -204,6 +204,7 @@ class Session:
         self.days = [self.day] + [d for d in (self._on_disk(n) for n in range(1, LOOKBACK_DAYS + 1)) if d]
         self.book = load_book()
         want = bool(((cfg.get("scan") or {}).get("crypto") or {}).get("enabled", True))
+        self.crypto_scan = want                              # look for NEW coins. Held coins are managed either way
         self.crypto_on = want or any(is_crypto(s) for s in self.book)
         self.crypto_account = str(cfg["robinhood"].get("crypto_account") or "")
         self.pairs: dict[str, CryptoPair] = {}
@@ -792,7 +793,9 @@ class Session:
             say(f"Stocks: skipped, {why_not}.")
         coins: list[str] = []
         crypto_note = ""
-        if self.crypto_on:
+        if not self.crypto_scan:
+            say("Crypto: new coins are off (scan.crypto.enabled: false).")
+        elif self.crypto_on:
             try:
                 found, _, _, crypto_note = await scan.scan_crypto(rh, self.cfg, self.pairs)
                 coins = [c for c in found if c not in snap.positions]
